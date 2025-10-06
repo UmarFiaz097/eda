@@ -17,7 +17,6 @@ def load_file(file, sheet_name=None, encoding="utf-8", sep=","):
     suffix = os.path.splitext(name)[1].lower()
 
     if suffix in [".csv", ".txt"]:
-        # Try user-provided encoding/sep; fall back gracefully
         try:
             return pd.read_csv(file, encoding=encoding, sep=sep)
         except UnicodeDecodeError:
@@ -28,7 +27,6 @@ def load_file(file, sheet_name=None, encoding="utf-8", sep=","):
 
     if suffix in [".xlsx", ".xls"]:
         try:
-            # sheet_name can be None (first sheet) or a string
             return pd.read_excel(file, sheet_name=sheet_name, engine="openpyxl")
         except Exception as e:
             raise RuntimeError(f"Excel read error: {e}")
@@ -38,7 +36,6 @@ def load_file(file, sheet_name=None, encoding="utf-8", sep=","):
 def is_datetime_series(s: pd.Series) -> bool:
     if pd.api.types.is_datetime64_any_dtype(s):
         return True
-    # try to coerce small sample
     try:
         pd.to_datetime(s.dropna().head(10), errors="raise")
         return True
@@ -61,12 +58,11 @@ csv_encoding = st.sidebar.text_input("CSV encoding", value="utf-8")
 sheet_name = None
 if Ufile and os.path.splitext(Ufile.name)[1].lower() in [".xlsx", ".xls"]:
     try:
-        # Peek available sheets
         xls = pd.ExcelFile(Ufile)
         Ufile.seek(0)
         sheet_name = st.sidebar.selectbox("Excel sheet", options=xls.sheet_names, index=0)
     except Exception:
-        sheet_name = None  # fall back to first sheet
+        sheet_name = None
 
 if Ufile:
     try:
@@ -96,7 +92,6 @@ if Ufile:
         st.dataframe(na_table)
 
     st.subheader("📈 Summary Statistics")
-    # Describe numeric & non-numeric separately to avoid clutter
     if df.select_dtypes(include=np.number).shape[1] > 0:
         st.markdown("**Numeric columns**")
         st.dataframe(df.describe().T)
@@ -111,21 +106,23 @@ if Ufile:
     st.subheader("🧭 Column-wise Analysis")
     column = st.selectbox("Select a column for analysis", df.columns, index=0)
 
-    # Try to intelligently parse datetimes if chosen
     col = df[column]
     if is_datetime_series(col):
         if not pd.api.types.is_datetime64_any_dtype(col):
             with st.spinner("Parsing datetimes..."):
                 df[column] = pd.to_datetime(col, errors="coerce")
         st.write(f"Summary of **{column}** (datetime):")
-        tz_note = st.caption("Note: Parsed with `pandas.to_datetime(..., errors='coerce')`.")
-        # Choose an aggregation target
+        st.caption("Note: Parsed with `pandas.to_datetime(..., errors='coerce')`.")
         agg_target = st.selectbox(
             "Pick a numeric column to aggregate (count if none)",
             options=["<count>"] + list(df.select_dtypes(include=np.number).columns),
             index=0
         )
-        freq = st.selectbox("Resample frequency", ["D - Daily", "W - Weekly", "M - Monthly", "Q - Quarterly", "Y - Yearly"], index=2)
+        freq = st.selectbox(
+            "Resample frequency",
+            ["D - Daily", "W - Weekly", "M - Monthly", "Q - Quarterly", "Y - Yearly"],
+            index=2
+        )
         freq_map = {"D - Daily": "D", "W - Weekly": "W", "M - Monthly": "M", "Q - Quarterly": "Q", "Y - Yearly": "Y"}
 
         tmp = df[[column]].copy()
@@ -173,6 +170,79 @@ if Ufile:
         st.pyplot(fig)
 
     # ---------------------------
+    # Multi-variable analysis
+    # ---------------------------
+    st.subheader("📊 Multi-variable Analysis")
+
+    num_cols = df.select_dtypes(include=np.number).columns.tolist()
+    if len(num_cols) >= 2:
+        selected_vars = st.multiselect(
+            "Select two or more numeric variables to visualize together",
+            num_cols,
+            default=num_cols[:2]
+        )
+
+        chart_type = st.selectbox("Select chart type", ["Line Chart", "Scatter Plot", "Bar Chart"], index=0)
+
+        if len(selected_vars) >= 2:
+            fig, ax = plt.subplots(figsize=(10, 5))
+
+            if chart_type == "Line Chart":
+                df[selected_vars].plot(ax=ax)
+                ax.set_title("Line Chart of Selected Variables")
+                ax.set_xlabel("Index")
+                ax.set_ylabel("Value")
+
+            elif chart_type == "Scatter Plot":
+                x_var = st.selectbox("X-axis variable", selected_vars, index=0)
+                y_var = st.selectbox("Y-axis variable", selected_vars, index=1)
+                ax.scatter(df[x_var], df[y_var], alpha=0.6)
+                ax.set_xlabel(x_var)
+                ax.set_ylabel(y_var)
+                ax.set_title(f"Scatter Plot: {x_var} vs {y_var}")
+
+            elif chart_type == "Bar Chart":
+                df[selected_vars].plot(kind="bar", ax=ax)
+                ax.set_title("Bar Chart of Selected Variables")
+                ax.set_xlabel("Index")
+                ax.set_ylabel("Value")
+
+            st.pyplot(fig)
+        else:
+            st.info("Please select at least two variables to plot.")
+    else:
+        st.warning("No numeric columns available for multi-variable analysis.")
+
+    # ---------------------------
+    # Numeric vs Categorical comparison
+    # ---------------------------
+    st.subheader("🏷️ Numeric vs Categorical Comparison")
+
+    cat_cols = df.select_dtypes(exclude=np.number).columns.tolist()
+    num_cols = df.select_dtypes(include=np.number).columns.tolist()
+
+    if cat_cols and num_cols:
+        cat_col = st.selectbox("Select categorical column", cat_cols)
+        num_col = st.selectbox("Select numeric column", num_cols)
+
+        agg_func = st.selectbox("Aggregation function", ["mean", "sum", "median", "count"], index=0)
+
+        try:
+            grouped = df.groupby(cat_col)[num_col].agg(agg_func).sort_values(ascending=False)
+            st.dataframe(grouped.to_frame(f"{agg_func}({num_col})"))
+
+            fig, ax = plt.subplots(figsize=(10, 5))
+            grouped.plot(kind="bar", ax=ax)
+            ax.set_title(f"{agg_func.capitalize()} of {num_col} by {cat_col}")
+            ax.set_xlabel(cat_col)
+            ax.set_ylabel(f"{agg_func}({num_col})")
+            st.pyplot(fig)
+        except Exception as e:
+            st.error(f"Aggregation error: {e}")
+    else:
+        st.info("Need at least one categorical and one numeric column for this analysis.")
+
+    # ---------------------------
     # Correlation (numeric)
     # ---------------------------
     num = df.select_dtypes(include=np.number)
@@ -206,10 +276,8 @@ if Ufile:
             except Exception as e:
                 st.error(f"Query error: {e}")
 
-    # Offer full CSV download as well
     csv_all = df.to_csv(index=False).encode("utf-8")
     st.download_button("⬇️ Download full data as CSV", csv_all, file_name="data_export.csv", mime="text/csv")
 
 else:
     st.info("Upload a CSV or Excel file to begin.")
-
